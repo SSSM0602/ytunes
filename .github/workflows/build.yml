@@ -1,0 +1,58 @@
+name: Build yTunes
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+            script: scripts/build-linux.sh
+            artifact: ytunes-linux-x86_64
+          - os: macos-14
+            arch: arm64
+            script: scripts/build-macos.sh
+            artifact: ytunes-macos-arm64
+          - os: windows-2022
+            arch: x86_64
+            script: scripts/build-windows.bat
+            artifact: ytunes-windows-x86_64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Install VLC (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y vlc-bin vlc-plugin-base
+
+      - name: Install VLC (macOS)
+        if: runner.os == 'macOS'
+        run: brew install vlc
+
+      - name: Install VLC (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install vlc --no-progress
+
+      - name: Build
+        run: ${{ matrix.script }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/pyinstaller/ytunes*
