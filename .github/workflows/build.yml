@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
@@ -37,16 +38,19 @@ jobs:
 
       - name: Install VLC (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y vlc-bin vlc-plugin-base
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y vlc
 
       - name: Install VLC (macOS)
         if: runner.os == 'macOS'
-        run: brew install vlc
+        run: brew install --cask vlc
 
       - name: Install VLC (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: choco install vlc --no-progress
+        run: |
+          choco install vlc --no-progress --timeout 600
 
       - name: Build
         run: ${{ matrix.script }}
