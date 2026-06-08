@@ -1,15 +1,16 @@
 import os
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QTabWidget, QStatusBar,
-    QMessageBox, QMenuBar, QFileDialog,
+    QInputDialog, QMessageBox, QMenuBar, QFileDialog,
 )
 
 from app.search_tab import SearchTab
 from app.library_tab import LibraryTab
+from app.playlist_import_dialog import PlaylistImportDialog
 from app.playlist_tab import PlaylistTab
 from app.player_bar import PlayerBar
 from core.player import Player
@@ -19,6 +20,26 @@ from core.download_manager import DownloadManager
 from data.database import Database
 from data.models import SearchResult, Song
 from utils.cache import ThumbnailCache
+
+
+class PlaylistImportWorker(QThread):
+    playlist_fetched = pyqtSignal(str, str, list)
+    error = pyqtSignal(str)
+
+    def __init__(self, ytdlp: YtDlpClient, url: str):
+        super().__init__()
+        self.ytdlp = ytdlp
+        self.url = url
+
+    def run(self):
+        try:
+            title, description, entries = self.ytdlp.extract_playlist(self.url)
+            if title is None:
+                self.error.emit("Could not extract playlist from URL.")
+            else:
+                self.playlist_fetched.emit(title, description, entries)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class MainWindow(QMainWindow):
@@ -74,9 +95,13 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("File")
-        import_action = QAction("Import Music Folder...", self)
-        import_action.triggered.connect(self._import_music)
-        file_menu.addAction(import_action)
+        import_music_action = QAction("Import Music Folder...", self)
+        import_music_action.triggered.connect(self._import_music)
+        file_menu.addAction(import_music_action)
+        import_playlist_action = QAction("Import Playlist from URL...", self)
+        import_playlist_action.setShortcut("Ctrl+Shift+I")
+        import_playlist_action.triggered.connect(self._import_playlist)
+        file_menu.addAction(import_playlist_action)
         file_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.close)
@@ -224,6 +249,56 @@ class MainWindow(QMainWindow):
                     count += 1
             self.library_tab.refresh()
             self.status_bar.showMessage(f"Imported {count} songs")
+
+    def _import_playlist(self):
+        url, ok = QInputDialog.getText(self, "Import Playlist from URL",
+                                        "Paste a YouTube or YouTube Music playlist URL:")
+        if not ok or not url.strip():
+            return
+        url = url.strip()
+
+        self.status_bar.showMessage("Fetching playlist info...")
+        self._import_worker = PlaylistImportWorker(self.ytdlp, url)
+        self._import_worker.playlist_fetched.connect(self._on_playlist_fetched)
+        self._import_worker.error.connect(self._on_import_error)
+        self._import_worker.start()
+
+    def _on_playlist_fetched(self, title: str, description: str, entries: list):
+        self.status_bar.showMessage(f"Playlist fetched: {title} ({len(entries)} songs)")
+        dialog = PlaylistImportDialog(title, description, entries, self.thumb_cache, self)
+        if dialog.exec() != PlaylistImportDialog.DialogCode.Accepted:
+            self.status_bar.showMessage("Playlist import cancelled")
+            return
+
+        existing_names = {pl.name for pl in self.db.get_playlists()}
+        unique_name = title
+        if unique_name in existing_names:
+            suffix = 2
+            while f"{title} ({suffix})" in existing_names:
+                suffix += 1
+            unique_name = f"{title} ({suffix})"
+
+        pl_id = self.db.create_playlist(unique_name, description)
+        imported = 0
+        for entry in entries:
+            song = Song(
+                title=entry.title,
+                artist=entry.artist,
+                duration=entry.duration,
+                youtube_id=entry.youtube_id,
+                thumbnail_url=entry.thumbnail_url,
+            )
+            song_id = self.db.add_song(song)
+            self.db.add_song_to_playlist(pl_id, song_id)
+            imported += 1
+
+        self.playlist_tab.refresh()
+        self.tabs.setCurrentIndex(2)
+        self.status_bar.showMessage(f"Imported playlist: {unique_name} ({imported} songs)")
+
+    def _on_import_error(self, msg: str):
+        QMessageBox.warning(self, "Import Error", f"Failed to import playlist:\n{msg}")
+        self.status_bar.showMessage("Playlist import failed")
 
     def _clear_cache(self):
         self.thumb_cache.clear()

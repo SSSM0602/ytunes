@@ -117,3 +117,40 @@ class YtDlpClient:
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"https://youtube.com/watch?v={youtube_id}", download=False)
             return info
+
+    def extract_playlist(self, url: str) -> tuple[str | None, str, list[SearchResult]]:
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,
+            "ignoreerrors": True,
+            "source_address": "0.0.0.0",
+        }
+        try:
+            with YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if not info or "entries" not in info:
+                    return None, "", []
+                title = info.get("title", "Imported Playlist")
+                description = info.get("description", "")
+                entries: list[SearchResult] = []
+                seen: set[str] = set()
+                for entry in info["entries"]:
+                    if not entry or not entry.get("id"):
+                        continue
+                    vid = entry["id"]
+                    if vid in seen:
+                        continue
+                    seen.add(vid)
+                    uploader = entry.get("uploader") or entry.get("channel", "Unknown")
+                    entries.append(SearchResult(
+                        title=entry.get("title", "Unknown"),
+                        artist=self._clean_artist(uploader),
+                        duration=entry.get("duration", 0) or 0,
+                        youtube_id=vid,
+                        thumbnail_url=entry.get("thumbnail") or entry.get("thumbnails", [{}])[0].get("url", ""),
+                        url=f"https://youtube.com/watch?v={vid}",
+                    ))
+                return title, description, entries
+        except Exception:
+            return None, "", []
