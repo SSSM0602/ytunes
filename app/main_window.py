@@ -1,18 +1,19 @@
 import os
+import random
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QTabWidget, QStatusBar,
     QInputDialog, QMessageBox, QMenuBar, QFileDialog,
 )
 
-from app.search_tab import SearchTab
-from app.library_tab import LibraryTab
+from app.player_bar import PlayerBar, REPEAT_NONE, REPEAT_ALL, REPEAT_ONE
 from app.playlist_import_dialog import PlaylistImportDialog
 from app.playlist_tab import PlaylistTab
-from app.player_bar import PlayerBar
+from app.search_tab import SearchTab
+from app.library_tab import LibraryTab
 from core.player import Player
 from core.ytdlp_client import YtDlpClient
 from core.stream_manager import StreamManager
@@ -57,9 +58,234 @@ class MainWindow(QMainWindow):
 
         self._queue: list[Song | SearchResult] = []
 
+        self._playlist_context: list[Song] = []
+        self._playlist_index: int = -1
+        self._shuffle_enabled: bool = False
+        self._shuffle_order: list[int] = []
+        self._repeat_mode: int = REPEAT_NONE
+
+        self.player.set_on_song_finished(self._on_song_finished_internal)
+
         self._setup_ui()
         self._setup_menu()
         self._connect_signals()
+
+    # --- Callback from VLC thread → bounce to main thread ---
+
+    def _on_song_finished_internal(self):
+        QTimer.singleShot(0, self._on_song_finished)
+
+    def _on_song_finished(self):
+        if self._repeat_mode == REPEAT_ONE:
+            self.player.seek_to_start()
+            self.player.resume()
+            return
+
+        self._advance_to_next()
+
+    # --- Playback controller ---
+
+    def _advance_to_next(self):
+        next_song = self._resolve_next_song()
+        if next_song is None:
+            self.status_bar.showMessage("Playback finished")
+            self.player_bar.display_song("Playback finished", "")
+            return
+        self._play_song(next_song)
+
+    def _resolve_next_song(self) -> Song | None:
+        if self._queue:
+            item = self._queue.pop(0)
+            if isinstance(item, SearchResult):
+                song = Song(
+                    title=item.title, artist=item.artist,
+                    duration=item.duration, youtube_id=item.youtube_id,
+                    thumbnail_url=item.thumbnail_url,
+                )
+                return song
+            return item
+
+        if not self._playlist_context:
+            return None
+
+        if self._shuffle_enabled:
+            current_pos = self._shuffle_order.index(self._playlist_index) if self._playlist_index in self._shuffle_order else -1
+            next_pos = current_pos + 1
+            if next_pos >= len(self._shuffle_order):
+                if self._repeat_mode == REPEAT_ALL:
+                    self._reshuffle()
+                    self._playlist_index = self._shuffle_order[0]
+                else:
+                    return None
+            else:
+                self._playlist_index = self._shuffle_order[next_pos]
+        else:
+            next_idx = self._playlist_index + 1
+            if next_idx >= len(self._playlist_context):
+                if self._repeat_mode == REPEAT_ALL:
+                    self._playlist_index = 0
+                else:
+                    return None
+            else:
+                self._playlist_index = next_idx
+
+        return self._playlist_context[self._playlist_index]
+
+    def _resolve_previous_song(self) -> Song | None:
+        if not self._playlist_context:
+            return None
+
+        if self._shuffle_enabled:
+            current_pos = self._shuffle_order.index(self._playlist_index) if self._playlist_index in self._shuffle_order else -1
+            prev_pos = current_pos - 1
+            if prev_pos < 0:
+                if self._repeat_mode == REPEAT_ALL:
+                    prev_pos = len(self._shuffle_order) - 1
+                else:
+                    return None
+            self._playlist_index = self._shuffle_order[prev_pos]
+        else:
+            prev_idx = self._playlist_index - 1
+            if prev_idx < 0:
+                if self._repeat_mode == REPEAT_ALL:
+                    self._playlist_index = len(self._playlist_context) - 1
+                else:
+                    return None
+            else:
+                self._playlist_index = prev_idx
+
+        return self._playlist_context[self._playlist_index]
+
+    def _play_playlist(self, playlist_id: int, shuffle: bool = False):
+        self._playlist_context = self.db.get_playlist_songs(playlist_id)
+        if not self._playlist_context:
+            self.status_bar.showMessage("Playlist is empty")
+            return
+
+        if shuffle:
+            self._shuffle_enabled = True
+            self.player_bar.shuffle_btn.setChecked(True)
+            self._reshuffle()
+            self._playlist_index = self._shuffle_order[0]
+        else:
+            self._playlist_index = 0
+
+        self._play_song(self._playlist_context[self._playlist_index])
+
+    def _reshuffle(self):
+        self._shuffle_order = list(range(len(self._playlist_context)))
+        random.shuffle(self._shuffle_order)
+
+    def _on_shuffle_toggled(self, checked: bool):
+        self._shuffle_enabled = checked
+        if checked and self._playlist_context:
+            if self._playlist_index >= 0:
+                current_idx = self._playlist_index
+            else:
+                current_idx = 0
+            self._reshuffle()
+            try:
+                self._shuffle_order.remove(current_idx)
+                self._shuffle_order.insert(0, current_idx)
+            except ValueError:
+                pass
+            self._playlist_index = current_idx
+
+    def _on_repeat_mode_changed(self, mode: int):
+        self._repeat_mode = mode
+
+    def _play_search_result(self, result: SearchResult):
+        song = Song(
+            title=result.title,
+            artist=result.artist,
+            duration=result.duration,
+            youtube_id=result.youtube_id,
+            thumbnail_url=result.thumbnail_url,
+        )
+        self._playlist_context = []
+        self._playlist_index = -1
+        self._play(song)
+
+    def _play_song(self, song: Song):
+        if song.is_local and song.local_path and os.path.exists(song.local_path):
+            self.player_bar.display_song(song.title, song.artist)
+            self.player.play_file(song.local_path, song)
+            self.status_bar.showMessage(f"Playing: {song.title}")
+            return
+
+        self._play(song)
+
+    def _play(self, song: Song, url_override: str | None = None):
+        cached_url = self.stream_manager.get_cached_url(song.youtube_id)
+        if cached_url:
+            self.player_bar.display_song(
+                song.title, song.artist,
+                self.thumb_cache.get(song.thumbnail_url)
+            )
+            self.player.play_url(cached_url, song)
+            self.status_bar.showMessage(f"Playing: {song.title}")
+            return
+
+        if url_override:
+            url = url_override
+        else:
+            url = self.ytdlp.get_audio_url(song.youtube_id)
+
+        if not url:
+            resolved = self.ytdlp.resolve_stream_url(song.youtube_id)
+            url = resolved
+
+        if url:
+            self.stream_manager.cache_url(song.youtube_id, url)
+            self.player_bar.display_song(
+                song.title, song.artist,
+                self.thumb_cache.get(song.thumbnail_url)
+            )
+            self.player.play_url(url, song)
+            self.status_bar.showMessage(f"Playing: {song.title}")
+
+            if not self.thumb_cache.get(song.thumbnail_url):
+                self.thumb_cache.fetch(song.thumbnail_url)
+        else:
+            QMessageBox.warning(self, "Playback Error",
+                                f"Could not resolve stream URL for {song.title}")
+
+    def _add_to_queue(self, result: SearchResult):
+        self._queue.append(result)
+        self.status_bar.showMessage(f"Added to queue ({len(self._queue)} queued)")
+
+    def _add_song_to_queue(self, song: Song):
+        self._queue.append(song)
+        self.status_bar.showMessage(f"Added to queue ({len(self._queue)} queued)")
+
+    def _play_previous(self):
+        prev = self._resolve_previous_song()
+        if prev:
+            self._play_song(prev)
+        else:
+            self.status_bar.showMessage("At beginning of playlist")
+
+    def _play_next(self):
+        next_song = self._resolve_next_song()
+        if next_song:
+            self._play_song(next_song)
+        else:
+            self.status_bar.showMessage("Queue and playlist are empty")
+
+    def _show_queue(self):
+        songs = []
+        for item in self._queue:
+            if isinstance(item, SearchResult):
+                songs.append(f"{item.artist} - {item.title}")
+            else:
+                songs.append(f"{item.artist} - {item.title}")
+        if songs:
+            QMessageBox.information(self, "Queue",
+                                    "\n".join(f"{i+1}. {s}" for i, s in enumerate(songs)))
+        else:
+            QMessageBox.information(self, "Queue", "Queue is empty")
+
+    # --- UI setup ---
 
     def _setup_ui(self):
         central = QWidget()
@@ -126,100 +352,24 @@ class MainWindow(QMainWindow):
         self.library_tab.play_requested.connect(self._play_song)
         self.library_tab.add_to_queue_requested.connect(self._add_song_to_queue)
 
-        self.playlist_tab.play_requested.connect(self._play_song)
+        self.playlist_tab.play_requested.connect(self._on_playlist_song_clicked)
         self.playlist_tab.add_to_queue_requested.connect(self._add_song_to_queue)
+        self.playlist_tab.play_all_requested.connect(lambda pid: self._play_playlist(pid, shuffle=False))
+        self.playlist_tab.shuffle_play_requested.connect(lambda pid: self._play_playlist(pid, shuffle=True))
 
         self.player_bar.prev_btn.clicked.connect(self._play_previous)
         self.player_bar.next_btn.clicked.connect(self._play_next)
         self.player_bar.queue_btn.clicked.connect(self._show_queue)
+        self.player_bar.shuffle_toggled.connect(self._on_shuffle_toggled)
+        self.player_bar.repeat_mode_changed.connect(self._on_repeat_mode_changed)
 
-    def _play_search_result(self, result: SearchResult):
-        song = Song(
-            title=result.title,
-            artist=result.artist,
-            duration=result.duration,
-            youtube_id=result.youtube_id,
-            thumbnail_url=result.thumbnail_url,
-        )
-        self._play(song)
-
-    def _play_song(self, song: Song):
-        if song.is_local and song.local_path and os.path.exists(song.local_path):
-            self.player_bar.display_song(song.title, song.artist)
-            self.player.play_file(song.local_path, song)
-            self.status_bar.showMessage(f"Playing: {song.title}")
-            return
-
-        self._play(song)
-
-    def _play(self, song: Song, url_override: str | None = None):
-        cached_url = self.stream_manager.get_cached_url(song.youtube_id)
-        if cached_url:
-            self.player_bar.display_song(
-                song.title, song.artist,
-                self.thumb_cache.get(song.thumbnail_url)
-            )
-            self.player.play_url(cached_url, song)
-            self.status_bar.showMessage(f"Playing: {song.title}")
-            return
-
-        if url_override:
-            url = url_override
-        else:
-            url = self.ytdlp.get_audio_url(song.youtube_id)
-
-        if not url:
-            resolved = self.ytdlp.resolve_stream_url(song.youtube_id)
-            url = resolved
-
-        if url:
-            self.stream_manager.cache_url(song.youtube_id, url)
-            self.player_bar.display_song(
-                song.title, song.artist,
-                self.thumb_cache.get(song.thumbnail_url)
-            )
-            self.player.play_url(url, song)
-            self.status_bar.showMessage(f"Playing: {song.title}")
-
-            if not self.thumb_cache.get(song.thumbnail_url):
-                self.thumb_cache.fetch(song.thumbnail_url)
-        else:
-            QMessageBox.warning(self, "Playback Error",
-                                f"Could not resolve stream URL for {song.title}")
-
-    def _add_to_queue(self, result: SearchResult):
-        self._queue.append(result)
-        self.status_bar.showMessage(f"Added to queue ({len(self._queue)} queued)")
-
-    def _add_song_to_queue(self, song: Song):
-        self._queue.append(song)
-        self.status_bar.showMessage(f"Added to queue ({len(self._queue)} queued)")
-
-    def _play_previous(self):
-        pass
-
-    def _play_next(self):
-        if self._queue:
-            next_item = self._queue.pop(0)
-            if isinstance(next_item, SearchResult):
-                self._play_search_result(next_item)
-            else:
-                self._play_song(next_item)
-        else:
-            self.status_bar.showMessage("Queue is empty")
-
-    def _show_queue(self):
-        songs = []
-        for item in self._queue:
-            if isinstance(item, SearchResult):
-                songs.append(f"{item.artist} - {item.title}")
-            else:
-                songs.append(f"{item.artist} - {item.title}")
-        if songs:
-            QMessageBox.information(self, "Queue",
-                                    "\n".join(f"{i+1}. {s}" for i, s in enumerate(songs)))
-        else:
-            QMessageBox.information(self, "Queue", "Queue is empty")
+    def _on_playlist_song_clicked(self, song: Song):
+        self._playlist_context = self.playlist_tab._current_songs
+        for i, s in enumerate(self._playlist_context):
+            if s.youtube_id == song.youtube_id:
+                self._playlist_index = i
+                break
+        self._play_song(song)
 
     def _download_result(self, result: SearchResult):
         song = Song(

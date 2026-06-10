@@ -1,24 +1,34 @@
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFrame, QHBoxLayout, QVBoxLayout, QPushButton, QLabel,
-    QSlider, QWidget, QSizePolicy,
+    QSlider,
 )
 
 from utils.format_utils import format_duration
 
 
+REPEAT_NONE = 0
+REPEAT_ALL = 1
+REPEAT_ONE = 2
+
+
 class PlayerBar(QFrame):
+    shuffle_toggled = pyqtSignal(bool)
+    repeat_mode_changed = pyqtSignal(int)
+
     def __init__(self, player, parent=None):
         super().__init__(parent)
         self.player = player
+        self._shuffle_on = False
+        self._repeat_mode = REPEAT_NONE
         self._setup_ui()
         self._connect_signals()
         self._setup_timer()
 
     def _setup_ui(self):
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setFixedHeight(90)
+        self.setFixedHeight(100)
         self.setStyleSheet("""
             PlayerBar {
                 background: palette(window);
@@ -51,29 +61,46 @@ class PlayerBar(QFrame):
 
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(8)
+
+        self.shuffle_btn = QPushButton("🔀")
+        self.shuffle_btn.setFixedSize(32, 32)
+        self.shuffle_btn.setToolTip("Shuffle")
+        self.shuffle_btn.setCheckable(True)
+
         self.prev_btn = QPushButton("⏮")
         self.prev_btn.setFixedSize(32, 32)
         self.prev_btn.setToolTip("Previous")
+
         self.play_btn = QPushButton("▶")
         self.play_btn.setFixedSize(40, 40)
         self.play_btn.setToolTip("Play/Pause")
+
         self.next_btn = QPushButton("⏭")
         self.next_btn.setFixedSize(32, 32)
         self.next_btn.setToolTip("Next")
 
-        for btn in (self.prev_btn, self.play_btn, self.next_btn):
+        self.repeat_btn = QPushButton("🔁")
+        self.repeat_btn.setFixedSize(32, 32)
+        self.repeat_btn.setToolTip("Repeat: Off")
+
+        mode_btns = [self.shuffle_btn, self.repeat_btn]
+        for btn in (self.shuffle_btn, self.prev_btn, self.play_btn, self.next_btn, self.repeat_btn):
             btn.setStyleSheet("""
                 QPushButton {
                     border: none; font-size: 18px;
                     background: transparent;
                 }
                 QPushButton:hover { color: palette(highlight); }
+                QPushButton:checked { color: palette(highlight); }
             """)
+
+        btn_layout.addWidget(self.shuffle_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(self.prev_btn)
         btn_layout.addWidget(self.play_btn)
         btn_layout.addWidget(self.next_btn)
         btn_layout.addStretch()
+        btn_layout.addWidget(self.repeat_btn)
 
         seek_layout = QHBoxLayout()
         self.time_label = QLabel("0:00")
@@ -116,6 +143,21 @@ class PlayerBar(QFrame):
         self.seek_slider.sliderPressed.connect(self._on_seek_start)
         self.seek_slider.sliderReleased.connect(self._on_seek_end)
         self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        self.shuffle_btn.toggled.connect(self._on_shuffle_toggled)
+        self.repeat_btn.clicked.connect(self._on_repeat_clicked)
+
+    def _on_shuffle_toggled(self, checked: bool):
+        self._shuffle_on = checked
+        self.shuffle_toggled.emit(checked)
+
+    def _on_repeat_clicked(self):
+        self._repeat_mode = (self._repeat_mode + 1) % 3
+        icons = {REPEAT_NONE: "🔁", REPEAT_ALL: "🔁", REPEAT_ONE: "🔂"}
+        tips = {REPEAT_NONE: "Repeat: Off", REPEAT_ALL: "Repeat: All", REPEAT_ONE: "Repeat: One"}
+        self.repeat_btn.setText(icons[self._repeat_mode])
+        self.repeat_btn.setToolTip(tips[self._repeat_mode])
+        self.repeat_btn.setChecked(self._repeat_mode != REPEAT_NONE)
+        self.repeat_mode_changed.emit(self._repeat_mode)
 
     def _setup_timer(self):
         self._timer = QTimer(self)

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=yTunes
+GenericName=Music Player
+Comment=Stream and download music from YouTube
+Exec=ytunes %u
+Icon=ytunes
+Terminal=false
+Categories=AudioVideo;Audio;Music;Player;
+Keywords=music;streaming;youtube;audio;player;
+StartupNotify=true
+MimeType=x-scheme-handler/youtube;

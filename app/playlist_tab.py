@@ -15,6 +15,8 @@ from app.playlist_dialog import PlaylistSelectionDialog
 class PlaylistTab(QWidget):
     play_requested = pyqtSignal(Song)
     add_to_queue_requested = pyqtSignal(Song)
+    play_all_requested = pyqtSignal(int)
+    shuffle_play_requested = pyqtSignal(int)
 
     def __init__(self, db: Database, thumb_cache: ThumbnailCache, parent=None):
         super().__init__(parent)
@@ -54,9 +56,30 @@ class PlaylistTab(QWidget):
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
+        header_layout = QHBoxLayout()
         self.header_label = QLabel("Select a playlist")
         self.header_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 8px;")
-        right_layout.addWidget(self.header_label)
+        header_layout.addWidget(self.header_label, 1)
+
+        self.play_all_btn = QPushButton("▶ Play All")
+        self.play_all_btn.setStyleSheet("""
+            QPushButton { padding: 4px 12px; border: 1px solid palette(mid);
+                          border-radius: 4px; background: transparent; font-size: 12px; }
+            QPushButton:hover { background: palette(highlight); color: white; }
+        """)
+        self.play_all_btn.clicked.connect(self._on_play_all)
+        header_layout.addWidget(self.play_all_btn)
+
+        self.shuffle_play_btn = QPushButton("🔀 Shuffle")
+        self.shuffle_play_btn.setStyleSheet("""
+            QPushButton { padding: 4px 12px; border: 1px solid palette(mid);
+                          border-radius: 4px; background: transparent; font-size: 12px; }
+            QPushButton:hover { background: palette(highlight); color: white; }
+        """)
+        self.shuffle_play_btn.clicked.connect(self._on_shuffle_play)
+        header_layout.addWidget(self.shuffle_play_btn)
+
+        right_layout.addLayout(header_layout)
 
         self.song_list = QListWidget()
         self.song_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -68,6 +91,14 @@ class PlaylistTab(QWidget):
         splitter.setSizes([200, 500])
 
         layout.addWidget(splitter, 1)
+
+    def _on_play_all(self):
+        if self._current_playlist_id is not None:
+            self.play_all_requested.emit(self._current_playlist_id)
+
+    def _on_shuffle_play(self):
+        if self._current_playlist_id is not None:
+            self.shuffle_play_requested.emit(self._current_playlist_id)
 
     def _load_playlists(self):
         self.playlist_list.blockSignals(True)
@@ -84,6 +115,8 @@ class PlaylistTab(QWidget):
             self._current_playlist_id = None
             self.header_label.setText("Select a playlist")
             self.song_list.clear()
+            self.play_all_btn.setEnabled(False)
+            self.shuffle_play_btn.setEnabled(False)
             return
 
         self._current_playlist_id = item.data(1)
@@ -94,8 +127,13 @@ class PlaylistTab(QWidget):
     def _load_songs(self):
         self.song_list.clear()
         if not self._current_playlist_id:
+            self.play_all_btn.setEnabled(False)
+            self.shuffle_play_btn.setEnabled(False)
             return
         self._current_songs = self.db.get_playlist_songs(self._current_playlist_id)
+        has_songs = len(self._current_songs) > 0
+        self.play_all_btn.setEnabled(has_songs)
+        self.shuffle_play_btn.setEnabled(has_songs)
         for song in self._current_songs:
             widget = QWidget()
             layout = QHBoxLayout(widget)

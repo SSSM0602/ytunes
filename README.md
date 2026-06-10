@@ -6,10 +6,16 @@ A desktop YouTube music player built with PyQt6 and VLC. Search YouTube Music, s
 
 - Search YouTube Music with automatic Topic channel prioritization
 - Stream audio from YouTube without downloading
-- Download songs for offline playback
-- Create and manage playlists
+- Download songs for offline playback (MP3 192kbps)
+- Create and manage playlists with Play All / Shuffle Play
+- Continuous playlist playback with auto-advance
+- Shuffle mode
+- Repeat modes: Off / All / One
 - Local music library with search and filter
+- Import local music folders
+- Import YouTube / YouTube Music playlists by URL
 - Thumbnail caching
+- Native desktop integration (`.desktop` file, app menu launcher)
 
 ## Installation
 

@@ -1,7 +1,4 @@
-import os
 import threading
-import time
-from pathlib import Path
 
 import vlc
 
@@ -20,12 +17,31 @@ class Player:
         self._state = self.STATE_STOPPED
         self._current_song: Song | None = None
         self._lock = threading.Lock()
+        self._song_finished_callback: callable | None = None
         self._listeners: dict[str, list[callable]] = {
             "state_changed": [],
             "position_changed": [],
             "song_finished": [],
             "error": [],
         }
+        self._init_event_manager()
+
+    def _init_event_manager(self):
+        self._event_manager = self.player.event_manager()
+        self._event_manager.event_attach(
+            vlc.EventType.MediaPlayerEndReached,
+            self._on_end_reached,
+        )
+
+    def _on_end_reached(self, event):
+        with self._lock:
+            self._state = self.STATE_STOPPED
+        self._emit("song_finished")
+        if self._song_finished_callback:
+            self._song_finished_callback()
+
+    def set_on_song_finished(self, callback: callable):
+        self._song_finished_callback = callback
 
     @property
     def state(self) -> str:
@@ -76,8 +92,6 @@ class Player:
             self.pause()
         elif self._state == self.STATE_PAUSED:
             self.resume()
-        else:
-            pass
 
     def stop(self):
         self.player.stop()
@@ -87,6 +101,9 @@ class Player:
 
     def seek(self, position: float):
         self.player.set_position(position)
+
+    def seek_to_start(self):
+        self.player.set_position(0.0)
 
     def set_volume(self, volume: int):
         self.player.audio_set_volume(max(0, min(100, volume)))
